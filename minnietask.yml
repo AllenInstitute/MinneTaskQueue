@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    run: minnietask-cpu2
+  name: minnietask-cpu2
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      run: minnietask-cpu2
+  strategy:
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 100%
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        run: minnietask-cpu2
+    spec:
+      containers:
+      - image: fcollman/minnietask:v12
+        name: minnietask-cpu2
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh"]
+        args: ["-c", "while true; do python -u worker.py https://sqs.us-west-2.amazonaws.com/629034007606/forrest 300; done"]
+        env:
+        - name: CLOUDSDK_CORE_PROJECT
+          value: ${CLOUDSDK_CORE_PROJECT}
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/root/.cloudvolume/secrets/google-secret.json"
+        - name: BUMP
+          value: "test"
+        resources: 
+          requests:
+            cpu: 50m
+        volumeMounts:
+        - name: secrets2
+          mountPath: /root/.cloudvolume/secrets 
+          readOnly: true
+        - name: boto
+          mountPath: /root/.boto
+          readOnly: true
+          subPath: minimal_boto
+      dnsPolicy: Default
+      volumes:
+      - name: secrets2
+        secret:
+          secretName: secrets2
+      - name: boto
+        secret:
+          secretName: boto

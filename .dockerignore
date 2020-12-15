@@ -1,0 +1,15 @@
+test_json/
+*.ipynb_checkpoints
+__pycache__
+*.pkl
+*.png
+result_jsons/
+minnie_meshes/
+phase2_result_jsons/
+pinky_result_json/
+pinky_result_json_v2/
+minniephase3-skeletons/
+minniephase2-skeletons/
+*.ipynb
+*.ai
+*.zip
