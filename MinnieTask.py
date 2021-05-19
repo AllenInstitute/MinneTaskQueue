@@ -13,6 +13,10 @@ from meshparty import trimesh_io, skeletonize, skeleton_io
 import os
 import copy 
 
+model1=None
+model2=None
+model3=None
+
 class NoIDFoundException(Exception):
     """there was no ID in the mask that wasn't excluded"""
 
@@ -30,7 +34,7 @@ def find_max_id_in_mask(mask, id_space, exclude_list = (0)):
         max_frac = counts[max_ind]/np.sum(counts)
         return max_id, max_frac
     else:
-        raise NoIDFoundException
+        raise NoIDFoundException("could not find ")
 
 def locate_id_in_mask(mask, sup_img, mins, scale=(16,16,1)):
     sv_id, sv_frac = find_max_id_in_mask(mask, sup_img)
@@ -41,16 +45,27 @@ def locate_id_in_mask(mask, sup_img, mins, scale=(16,16,1)):
     return sv_id, sv_frac, sv_id_loc, sv_mask
 
 def get_id_spaces(nuc_seg_source, pcg_source, bbox, timestamp, resolution=(64,64,40)):
-    nuc_cv = cloudvolume.CloudVolume(nuc_seg_source, mip=resolution, fill_missing=True, bounded=False, use_https=True)
-    seg_cv = cloudvolume.CloudVolume(pcg_source, mip=resolution, use_https=True, fill_missing=True, bounded=False)
+    seg_cv = cloudvolume.CloudVolume(pcg_source, mip=resolution,
+                                     use_https=True,
+                                     fill_missing=True,
+                                     bounded=False)
+    
     if pcg_source.startswith('graphene'):
         sup_img = seg_cv.download(bbox, agglomerate=False)
         flat_img = seg_cv.agglomerate_cutout(np.array(sup_img), timestamp=timestamp)
     else:
         flat_img = seg_cv.download(bbox)
         sup_img = flat_img
-    nuc_seg_cutout = nuc_cv.download(bbox)
-    
+    if nuc_seg_source is not None:
+        nuc_cv = cloudvolume.CloudVolume(nuc_seg_source,
+                                         ip=resolution,
+                                         fill_missing=True,
+                                         bounded=False,
+                                         use_https=True)
+        nuc_seg_cutout = nuc_cv.download(bbox)  
+    else:
+        nuc_seg_cutout = flat_img
+
     return sup_img, flat_img, nuc_seg_cutout
 
 class MinnieSkeletonizeNeuron(RegisteredTask):
@@ -227,16 +242,18 @@ class MinnieSupervoxelLookup(RegisteredTask):
         cf.put_json(f'{self.flat_nuc_id}.json', lookup_d)
         print(lookup_d)
         
-
+ 
 
 class MinnieNucMergeTask(RegisteredTask):
-    def __init__(self, nuc_source="", pcg_source="", flat_nuc_id=0,
+    def __init__(self, nuc_source=None, pcg_source="", flat_nuc_id=0,
                  mins = (0,0,0), maxs=(10,10,10), centroid = (5,5,5),
                  resolution=[64,64,40], bucket_save_location = "",
+                 point_resolution=[4,4,40],
                  timestamp=datetime.datetime.now(), find_merge=True):
         super().__init__(nuc_source, pcg_source, flat_nuc_id,
-                         mins,maxs, centroid, resolution,
-                         bucket_save_location, timestamp, find_merge)
+                         mins,maxs, centroid, resolution, 
+                         bucket_save_location, point_resolution, 
+                         timestamp, find_merge)
         
         self.nuc_source=nuc_source
         self.pcg_source=pcg_source
@@ -248,8 +265,12 @@ class MinnieNucMergeTask(RegisteredTask):
         self.bucket_save_location = bucket_save_location
         self.timestamp = timestamp
         self.find_merge = find_merge
+        self.scale = np.array(resolution, dtype=np.float)/point_resolution
     def execute(self):
+    
         bbox = cloudvolume.Bbox(self.mins, self.maxs)
+        print(f'merging {self.flat_nuc_id} at {self.centroid * self.scale}')
+        print(bbox)
         #dt_timestamp = datetime.datetime.fromisoformat(self.timestamp)
         sup_img, flat_img, nuc_seg_cutout = get_id_spaces(self.nuc_source, self.pcg_source,
                                                           bbox, self.timestamp, self.resolution)
@@ -260,6 +281,11 @@ class MinnieNucMergeTask(RegisteredTask):
         cf = CloudFiles(self.bucket_save_location)
         
         #get border voxels using masks
+        # if no flat nucleus given, use voxel at center
+        if self.flat_nuc_id==0:
+            ctr = bbox.size()//2
+            self.flat_nuc_id = nuc_seg_cutout[ctr[0], ctr[1], ctr[2]][0]
+            
         nuc_mask = np.array(nuc_seg_cutout==self.flat_nuc_id)
         print(np.sum(nuc_mask), nuc_mask.shape)
         if ((np.sum(nuc_mask)==0) | np.any(np.array(nuc_mask.shape[:3])==1)):
@@ -267,7 +293,9 @@ class MinnieNucMergeTask(RegisteredTask):
                 'flat_nuc_id': self.flat_nuc_id,
                 'ctr_pt_id': 0,
                 'nuc_id': 0,
-                'cell_id': 0
+                'cell_id': 0,
+                'centroid': self.centroid*self.scale,
+                'message': 'nucleus is only in single section or contains zero voxels'
             }]
             cf.put_json(f'{self.flat_nuc_id}.json', merge_events)
             print(merge_events)
@@ -290,7 +318,9 @@ class MinnieNucMergeTask(RegisteredTask):
                 'flat_nuc_id': self.flat_nuc_id,
                 'ctr_pt_id': ctr_seg_id,
                 'nuc_id': ctr_seg_id,
-                'cell_id': 0
+                'cell_id': 0,
+                'centroid': self.centroid*self.scale,
+                'message': 'no cell ids found in border, likely out of volume'
             }]
             cf.put_json(f'{self.flat_nuc_id}.json', merge_events)
             print(merge_events)
@@ -304,7 +334,9 @@ class MinnieNucMergeTask(RegisteredTask):
                 'ctr_pt_id': ctr_seg_id,
                 'nuc_id': ctr_seg_id,
                 'cell_id': cell_id,
-                'cell_frac': cell_frac
+                'cell_frac': cell_frac,
+                'centroid': self.centroid*self.scale,
+                'message': 'no IDs in nucleus mask other than cell_id'
             }]
             cf.put_json(f'{self.flat_nuc_id}.json', merge_events)
             print(merge_events)
@@ -322,13 +354,13 @@ class MinnieNucMergeTask(RegisteredTask):
                 nuc_border_cell_mask2 = np.logical_and(nuc_border_cell_mask, np.array(flat_img==nuc_id))
 
                 try:
-                    vals = locate_id_in_mask(nuc_border_cell_mask2, sup_img, self.mins)
+                    vals = locate_id_in_mask(nuc_border_cell_mask2, sup_img, self.mins, scale=self.scale)
                     nuc_sv_id, nuc_sv_id_frac, nuc_sv_id_loc, nuc_sv_id_mask = vals
 
                     nuc_sv_id_mask_expand = morphology.binary_dilation(nuc_sv_id_mask,iterations=2) 
                     border_nuc_sv_id_mask = np.logical_and(nuc_sv_id_mask_expand, cell_mask)
 
-                    vals = locate_id_in_mask(border_nuc_sv_id_mask, sup_img, self.mins)          
+                    vals = locate_id_in_mask(border_nuc_sv_id_mask, sup_img, self.mins, scale=self.scale)          
                     cell_sv_id, cell_sv_id_frac, cell_sv_id_loc, cell_sv_id_mask = vals     
 
                     print(nuc_id, nuc_sv_id, nuc_sv_id_loc, cell_sv_id, cell_sv_id_frac, cell_id, cell_frac)
@@ -342,7 +374,9 @@ class MinnieNucMergeTask(RegisteredTask):
                         'cell_sv_id': cell_sv_id,
                         'cell_sv_id_loc': cell_sv_id_loc.tolist(),
                         'cell_frac': cell_frac,
-                        'nuc_id_voxels': nuc_voxels
+                        'nuc_id_voxels': nuc_voxels,
+                        'centroid': self.centroid*self.scale,
+                        'message':'success, merge found'
                     }
                     merge_events.append(merge_event)
                 except NoIDFoundException: 
@@ -352,7 +386,9 @@ class MinnieNucMergeTask(RegisteredTask):
                         'flat_nuc_id': self.flat_nuc_id,
                         'ctr_pt_id': ctr_seg_id,
                         'cell_frac': cell_frac,
-                        'nuc_id_voxels': nuc_voxels
+                        'nuc_id_voxels': nuc_voxels,
+                        'centroid': self.centroid*self.scale,
+                        'message': 'could not find merge for nuc_id to cell_id'
                     }
                     merge_events.append(merge_event)
             if len(merge_events)==0:
@@ -361,7 +397,9 @@ class MinnieNucMergeTask(RegisteredTask):
                     'ctr_pt_id': ctr_seg_id,
                     'nuc_id': ctr_seg_id,
                     'cell_id': cell_id,
-                    'cell_frac': cell_frac
+                    'cell_frac': cell_frac,
+                    'centroid': self.centroid*self.scale,
+                    'message': 'no merge events found'
                 }]
         else:
             merge_events = [{
@@ -369,7 +407,9 @@ class MinnieNucMergeTask(RegisteredTask):
                     'ctr_pt_id': ctr_seg_id,
                     'nuc_id': ctr_seg_id,
                     'cell_id': cell_id,
-                    'cell_frac': cell_frac
+                    'cell_frac': cell_frac,
+                    'centroid': self.centroid*self.scale,
+                    'message': 'success, no merge search'
             }]
         cf.put_json(f'{self.flat_nuc_id}.json', merge_events)
         print(merge_events)
@@ -444,6 +484,61 @@ def create_nuc_merge_tasks(
     return NucMergeTaskIterator(df, nuc_source, pcg_source, bucket_save_location,
                                 resolution, timestamp, find_merge)
 
+       
+def create_nuc_merge_tasks_from_points(
+    pts, nuc_source, pcg_source, bucket_save_location,
+    resolution=[77.6,77.6,45.0], timestamp=datetime.datetime.now(),
+    cutout_radius_nm = (4000,4000,4000), point_resolution=(9,9,45),
+    find_merge=True):
+
+    class NucMergeTaskIterator(object):
+        def __init__(self, pts,nuc_source, pcg_source, bucket_save_location,
+                     cutout_radius_nm, point_resolution,resolution,
+                     timestamp, find_merge):
+            self.nuc_source = nuc_source
+            self.pcg_source = pcg_source
+            self.bucket_save_location=bucket_save_location
+            self.cutout_radius_nm = cutout_radius_nm
+            self.point_resolution = point_resolution
+            self.timestamp=timestamp
+            self.pts=pts
+            self.resolution=resolution
+            
+            self.find_merge=find_merge
+            self.cv = cloudvolume.CloudVolume(pcg_source, mip=self.resolution, use_https=True)
+
+        def __len__(self):
+            return len(pts)
+
+        def __getitem__(self, slc):
+            itr = copy.deepcopy(self)
+            itr.pts = pts[slc]
+            return itr
+
+        def __iter__(self):
+
+            for pt in pts:
+                pt = (pt * self.point_resolution)/self.cv.resolution
+                pt = pt.astype(np.int32)
+                cutout_radius_vx = np.array(self.cutout_radius_nm)/self.cv.resolution
+                cutout_radius_vx = cutout_radius_vx.astype(np.int32)
+                mins = pt - cutout_radius_vx
+                maxs = pt + cutout_radius_vx
+                centroid= pt
+                
+                yield MinnieNucMergeTask(self.nuc_source, 
+                                         self.pcg_source,
+                                         flat_nuc_id=0,
+                                         mins=mins, maxs=maxs, centroid=centroid,
+                                         resolution = self.resolution, 
+                                         bucket_save_location=self.bucket_save_location,
+                                         point_resolution=self.point_resolution,
+                                         timestamp=self.timestamp.isoformat(),
+                                         find_merge=self.find_merge)
+
+    return NucMergeTaskIterator(pts, nuc_source, pcg_source, bucket_save_location,
+                                cutout_radius_nm, point_resolution,
+                                resolution, timestamp, find_merge)
      
 def create_sv_lookup_tasks(
     df, pcg_source, bucket_save_location,
