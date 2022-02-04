@@ -20,3 +20,12 @@ Untitled*.ipynb
 token.pickle
 .DS_Store
 credentials.json
+flywire_result_jsons/
+pinky_result_jsons/
+pinky_result_jsons_v1/
+result_jsons/
+nuc_svids/
+v1dd_test_json/
+v1dd_test_json_2/
+minniev1-soma-region-nov21/
+minniev117-cell-frac/
