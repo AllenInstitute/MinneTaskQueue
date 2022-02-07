@@ -1,11 +1,3 @@
-minniephase2-skeletons/
-minniephase3-skeletons/
-nuc_svids/
-phase2_result_jsons/
-pinky_result_jsons/
-pinky_result_jsons_v2/
-test_json/
-result_jsons/
 .vscode
 .ipynb_checkpoints
 __pycache__
@@ -20,12 +12,4 @@ Untitled*.ipynb
 token.pickle
 .DS_Store
 credentials.json
-flywire_result_jsons/
-pinky_result_jsons/
-pinky_result_jsons_v1/
-result_jsons/
-nuc_svids/
-v1dd_test_json/
-v1dd_test_json_2/
-minniev1-soma-region-nov21/
-minniev117-cell-frac/
+results/

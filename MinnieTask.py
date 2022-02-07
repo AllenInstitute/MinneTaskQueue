@@ -362,6 +362,9 @@ class MinnieNucMergeTask(RegisteredTask):
         sup_img, flat_img, nuc_seg_cutout = get_id_spaces(
             self.nuc_source, self.pcg_source, bbox, self.timestamp, self.resolution
         )
+        n_zeros = np.sum(sup_img.ravel() == 0)
+        n_voxels = np.prod(sup_img.shape)
+        frac_zeros = float(n_zeros / n_voxels)
 
         ctr_ind = np.array(self.centroid, dtype=np.int32) - np.array(
             self.mins, dtype=np.int32
@@ -379,6 +382,7 @@ class MinnieNucMergeTask(RegisteredTask):
         if (np.sum(nuc_mask) == 0) | np.any(np.array(nuc_mask.shape[:3]) == 1):
             merge_events = [
                 {
+                    "frac_zeros": frac_zeros,
                     "flat_nuc_id": self.flat_nuc_id,
                     "ctr_pt_id": 0,
                     "nuc_id": 0,
@@ -407,6 +411,7 @@ class MinnieNucMergeTask(RegisteredTask):
         except NoIDFoundException:
             merge_events = [
                 {
+                    "frac_zeros": frac_zeros,
                     "flat_nuc_id": self.flat_nuc_id,
                     "ctr_pt_id": ctr_seg_id,
                     "nuc_id": ctr_seg_id,
@@ -426,6 +431,7 @@ class MinnieNucMergeTask(RegisteredTask):
         except NoIDFoundException:
             merge_events = [
                 {
+                    "frac_zeros": frac_zeros,
                     "flat_nuc_id": self.flat_nuc_id,
                     "ctr_pt_id": ctr_seg_id,
                     "nuc_id": ctr_seg_id,
@@ -480,6 +486,7 @@ class MinnieNucMergeTask(RegisteredTask):
                         cell_frac,
                     )
                     merge_event = {
+                        "frac_zeros": frac_zeros,
                         "flat_nuc_id": self.flat_nuc_id,
                         "ctr_pt_id": ctr_seg_id,
                         "nuc_id": nuc_id,
@@ -496,6 +503,7 @@ class MinnieNucMergeTask(RegisteredTask):
                     merge_events.append(merge_event)
                 except NoIDFoundException:
                     merge_event = {
+                        "frac_zeros": frac_zeros,
                         "nuc_id": nuc_id,
                         "cell_id": cell_id,
                         "flat_nuc_id": self.flat_nuc_id,
@@ -509,6 +517,7 @@ class MinnieNucMergeTask(RegisteredTask):
             if len(merge_events) == 0:
                 merge_events = [
                     {
+                        "frac_zeros": frac_zeros,
                         "flat_nuc_id": self.flat_nuc_id,
                         "ctr_pt_id": ctr_seg_id,
                         "nuc_id": ctr_seg_id,
@@ -521,6 +530,7 @@ class MinnieNucMergeTask(RegisteredTask):
         else:
             merge_events = [
                 {
+                    "frac_zeros": frac_zeros,
                     "flat_nuc_id": self.flat_nuc_id,
                     "ctr_pt_id": ctr_seg_id,
                     "nuc_id": ctr_seg_id,
@@ -573,9 +583,11 @@ def create_nuc_merge_tasks(
     nuc_source,
     pcg_source,
     bucket_save_location,
+    point_resolution=(4, 4, 40),
     resolution=(64, 64, 40),
     timestamp=datetime.datetime.now(),
     find_merge=True,
+    column_name="cleft_segid",
 ):
     class NucMergeTaskIterator(object):
         def __init__(
@@ -584,9 +596,11 @@ def create_nuc_merge_tasks(
             nuc_source,
             pcg_source,
             bucket_save_location,
+            point_resolution,
             resolution,
             timestamp,
             find_merge,
+            column_name,
         ):
             self.nuc_source = nuc_source
             self.pcg_source = pcg_source
@@ -595,6 +609,8 @@ def create_nuc_merge_tasks(
             self.df = df
             self.resolution = resolution
             self.find_merge = find_merge
+            self.point_resolution = point_resolution
+            self.column_name = column_name
 
         def __len__(self):
             return len(self.df)
@@ -618,11 +634,12 @@ def create_nuc_merge_tasks(
                 yield MinnieNucMergeTask(
                     self.nuc_source,
                     self.pcg_source,
-                    flat_nuc_id=row.cleft_segid,
+                    flat_nuc_id=row[self.column_name],
                     mins=mins,
                     maxs=maxs,
                     centroid=centroid,
                     resolution=self.resolution,
+                    point_resolution=self.point_resolution,
                     bucket_save_location=self.bucket_save_location,
                     timestamp=self.timestamp.isoformat(),
                     find_merge=self.find_merge,
@@ -633,9 +650,11 @@ def create_nuc_merge_tasks(
         nuc_source,
         pcg_source,
         bucket_save_location,
+        point_resolution,
         resolution,
         timestamp,
         find_merge,
+        column_name,
     )
 
 
