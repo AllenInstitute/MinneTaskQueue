@@ -21,14 +21,14 @@ spec:
         run: minnietask-cpu2
     spec:
       containers:
-        - image: fcollman/minnietask:v20
+        - image: fcollman/minnietask:v21
           name: minnietask-cpu2
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh"]
           args:
             [
               "-c",
-              "while true; do python -u worker.py https://sqs.us-west-2.amazonaws.com/629034007606/forrest-dead 240; done",
+              "while true; do python -u worker.py https://sqs.us-west-2.amazonaws.com/629034007606/forrest 240; done",
             ]
           env:
             - name: CLOUDSDK_CORE_PROJECT
@@ -39,8 +39,8 @@ spec:
               value: "test2"
           resources:
             requests:
-              cpu: 100m
-              memory: 2200Mi
+              cpu: 50m
+              memory: 200Mi
           volumeMounts:
             - name: secrets
               mountPath: /root/.cloudvolume/secrets
