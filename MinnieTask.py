@@ -194,6 +194,7 @@ class MinniePerformNucMergeTask(RegisteredTask):
         cell_sv_id_loc=(0, 0, 0),
         resolution=(4, 4, 40),
         datastack_name="minnie65_phase3_v1",
+        server_address=None,
     ):
         """[summary]
 
@@ -215,6 +216,7 @@ class MinniePerformNucMergeTask(RegisteredTask):
             cell_sv_id_loc,
             resolution,
             datastack_name,
+            server_address,
         )
 
         self.pcg_source = pcg_source
@@ -225,9 +227,10 @@ class MinniePerformNucMergeTask(RegisteredTask):
         self.cell_sv_id_loc = cell_sv_id_loc
         self.resolution = resolution
         self.datastack_name = datastack_name
+        self.server_address = server_address
 
     def execute(self):
-        client = CAVEclient(self.datastack_name)
+        client = CAVEclient(self.datastack_name, server_address=self.server_address)
         roots = client.chunkedgraph.get_roots([self.nuc_sv_id, self.cell_sv_id])
         r = {}
         if roots[0] != roots[1]:
@@ -545,14 +548,29 @@ class MinnieNucMergeTask(RegisteredTask):
 
 
 def create_perform_nuc_merge_tasks(
-    df, pcg_source, bucket_save_location, resolution=(4, 4, 40)
+    df,
+    pcg_source,
+    bucket_save_location,
+    resolution=(4, 4, 40),
+    datastack_name="minnie65_phase3_v1",
+    server_address="https://globalv1.daf-apis.com",
 ):
     class PerformNucMergeTaskIterator(object):
-        def __init__(self, df, pcg_source, bucket_save_location, resolution=(4, 4, 40)):
+        def __init__(
+            self,
+            df,
+            pcg_source,
+            bucket_save_location,
+            resolution=(4, 4, 40),
+            datastack_name="minnie65_phase3_v1",
+            server_address=None,
+        ):
             self.pcg_source = pcg_source
             self.bucket_save_location = bucket_save_location
             self.df = df
             self.resolution = resolution
+            self.datastack_name = datastack_name
+            self.server_address = server_address
 
         def __len__(self):
             return len(self.df)
@@ -573,9 +591,13 @@ def create_perform_nuc_merge_tasks(
                     row.nuc_sv_id_loc,
                     row.cell_sv_id_loc,
                     self.resolution,
+                    datastack_name=self.datastack_name,
+                    server_address=self.server_address,
                 )
 
-    return PerformNucMergeTaskIterator(df, pcg_source, bucket_save_location, resolution)
+    return PerformNucMergeTaskIterator(
+        df, pcg_source, bucket_save_location, resolution, datastack_name, server_address
+    )
 
 
 def create_nuc_merge_tasks(
