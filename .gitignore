@@ -13,3 +13,4 @@ token.pickle
 .DS_Store
 credentials.json
 results/
+minniev1-**/*

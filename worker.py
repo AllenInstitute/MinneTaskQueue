@@ -2,6 +2,8 @@ from MinnieTask import (
     MinnieNucMergeTask,
     MinniePerformNucMergeTask,
     quantify_soma_region,
+    execute_split, 
+    readjust_nuclei
 )
 from taskqueue import TaskQueue
 import sys

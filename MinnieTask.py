@@ -2,21 +2,17 @@ import pandas as pd
 from scipy.ndimage import morphology
 import numpy as np
 import cloudvolume
-import fastremap
 import datetime
 from taskqueue import RegisteredTask, queueable
 from cloudfiles import CloudFiles
 from caveclient import CAVEclient
+
 from requests import HTTPError
 import time
 from meshparty import trimesh_io, skeletonize, skeleton_io
 import os
 import copy
 from functools import partial
-
-model1 = None
-model2 = None
-model3 = None
 
 
 class NoIDFoundException(Exception):
@@ -858,6 +854,227 @@ def make_quantify_soma_region_tasks(
             resolution,
             bucket_save_location,
         )
+        return bound_fn
+
+    tasks = (make_bnd_func(row) for num, row in df.iterrows())
+    return tasks
+
+
+@queueable
+def execute_split(
+    root_id,
+    cut_ids,
+    source_list,
+    sink_list,
+    datastack_name,
+    auth_token,
+    bucket_save_location,
+):
+    client = CAVEclient(datastack_name, auth_token=auth_token)
+    edit_success = np.zeros(len(source_list), bool)
+    responses = []
+    print(f"editing {root_id}")
+    for k, (cut_id, source_pts, sink_pts) in enumerate(
+        zip(cut_ids, source_list, sink_list)
+    ):
+        try:
+            operation_id, new_root_ids = client.chunkedgraph.execute_split(
+                source_pts, sink_pts, root_id
+            )
+            edit_success[k] = True
+            d = {
+                "root_id": root_id,
+                "cut_id": cut_id,
+                "success": True,
+                "operation_id": operation_id,
+                "new_root_ids": new_root_ids,
+            }
+        except HTTPError as e:
+            d = {
+                "root_id": root_id,
+                "cut_id": cut_id,
+                "success": False,
+                "status_code": e.response.status_code,
+                "message": str(e),
+            }
+            edit_success[k] = False
+        responses.append(d)
+
+    cf = CloudFiles(bucket_save_location)
+    cf.put_json(f"{root_id}.json", responses)
+
+    # if not np.all(edit_success):
+    #     raise Exception(
+    #         f"Only {np.sum(edit_success)} of {len(edit_success)} were successful"
+    #     )
+
+
+def make_split_tasks(
+    df,
+    auth_token,
+    bucket_save_location,
+    datastack_name="minnie65_phase3_v1",
+    root_col="segment_id",
+    source_pt_col="valid_points",
+    sink_pt_col="error_points",
+    cut_id_col="cut_id",
+):
+    def make_split_func(root_id, grp):
+        bound_fn = partial(
+            execute_split,
+            root_id,
+            grp[cut_id_col].tolist(),
+            [r.tolist() for r in grp[source_pt_col]],
+            [r.tolist() for r in grp[sink_pt_col]],
+            datastack_name,
+            auth_token,
+            bucket_save_location,
+        )
+        return bound_fn
+
+    tasks = (make_split_func(root_id, grp) for root_id, grp in df.groupby(root_col))
+    return tasks
+
+
+@queueable
+def readjust_nuclei(
+    nuc_id,
+    nuc_pos,
+    nuc_sv,
+    nuc_pos_resolution,
+    nuc_cv_path,
+    seg_cv_path,
+    save_cloudpath,
+    radius,
+):
+    print(f"adjusting nucleus {nuc_id}")
+    # download the nucleus segmentation at the position given
+    nuc_cv = cloudvolume.CloudVolume(
+        nuc_cv_path, use_https=True, progress=False, fill_missing=True, bounded=False
+    )
+    nuc_seg_centroid_id = nuc_cv.download_point(
+        nuc_pos, size=1, coord_resolution=nuc_pos_resolution
+    )
+    nuc_seg_centroid_id = int(np.squeeze(nuc_seg_centroid_id[0]))
+
+    # if the nucleus isn't underneath this point, or if there is no supervoxel_id here
+    # then lets see if we can find a nearby  point that is in the segmentation and in the nucleus
+    if nuc_seg_centroid_id != nuc_id or nuc_sv == 0:
+        # initialize the segmentation cloud volume
+        seg_cv = cloudvolume.CloudVolume(
+            seg_cv_path,
+            mip=nuc_cv.resolution,
+            progress=False,
+            fill_missing=True,
+            bounded=False,
+        )
+
+        cutout_nm = np.array([radius, radius, radius])
+        cutout_nuc_vx = (cutout_nm / nuc_cv.resolution).astype(np.int32)
+        cutout_seg_vx = (cutout_nm / seg_cv.resolution).astype(np.int32)
+
+        # convert to voxels for the different cloud volumes
+        nuc_pos_vx = (
+            np.array(nuc_pos) * np.array(nuc_pos_resolution) / nuc_cv.resolution
+        ).astype(np.int32)
+        seg_pos_vx = (
+            np.array(nuc_pos) * np.array(nuc_pos_resolution) / seg_cv.resolution
+        ).astype(np.int32)
+
+        # setup bounding boxes for each cutout
+        nuc_bbox = cloudvolume.Bbox(
+            nuc_pos_vx - cutout_nuc_vx, nuc_pos_vx + cutout_nuc_vx
+        )
+        seg_bbox = cloudvolume.Bbox(
+            seg_pos_vx - cutout_seg_vx, seg_pos_vx + cutout_seg_vx
+        )
+        # nuc_bbox = cloudvolume.Bbox.intersection(nuc_bbox, nuc_cv.bounds)
+        # seg_bbox = cloudvolume.Bbox.intersection(seg_bbox, seg_cv.bounds)
+
+        # get the cutouts
+        nuc_cutout = np.squeeze(nuc_cv.download(nuc_bbox))
+        seg_cutout = np.squeeze(seg_cv.download(seg_bbox, agglomerate=False))
+
+        # make a mask of where the nucleus segmnentation matches the nucleus ID
+        # and is at least 5 pixels from the border
+        nuc_mask = nuc_cutout == nuc_id
+        nuc_mask_erode = morphology.binary_erosion(nuc_mask, iterations=5)
+
+        # make a mask of where the segmentation volume has data and is at least
+        # 5 pixels from the border
+        seg_mask = seg_cutout != 0
+        seg_mask_erode = morphology.binary_erosion(seg_mask, iterations=5)
+
+        # calculate the coordinates of where each voxels is in cutout coordinates
+        xs = np.arange(nuc_bbox.minpt[0], nuc_bbox.maxpt[0])
+        ys = np.arange(nuc_bbox.minpt[1], nuc_bbox.maxpt[1])
+        zs = np.arange(nuc_bbox.minpt[2], nuc_bbox.maxpt[2])
+        xx, yy, zz = np.meshgrid(xs, ys, zs)
+        # find the voxels where both masks are true
+        xi, yi, zi = np.where((nuc_mask_erode) & (seg_mask_erode))
+
+        # if there are any voxels then find the closest one
+        if len(xi) != 0:
+            # get the distance in voxels to the center voxel
+            dx_vx = xx[xi, yi, zi] - nuc_pos_vx[0]
+            dy_vx = yy[xi, yi, zi] - nuc_pos_vx[1]
+            dz_vx = zz[xi, yi, zi] - nuc_pos_vx[2]
+
+            # get the distance for each
+            dist_nm = np.linalg.norm(
+                np.vstack([dx_vx, dy_vx, dz_vx]).T * np.array(nuc_cv.resolution), axis=1
+            )
+            # get the closest one
+            close_point = np.argmin(dist_nm)
+            # need to add the index to the minpt to get the voxel index of the closest position
+            nuc_new_vx = nuc_bbox.minpt + [
+                xi[close_point],
+                yi[close_point],
+                zi[close_point],
+            ]
+            # convert this to the voxel resolution of the given point
+            nuc_new_ann_vx = (
+                nuc_new_vx * nuc_cv.resolution / nuc_pos_resolution
+            ).astype(np.int32)
+            d = {"nuc_id": nuc_id, "new_pos": nuc_new_ann_vx.tolist(), "success": True}
+            print("success")
+        else:
+            print("failed")
+            # if there are no such voxels, lets note our failure
+            d = {"nuc_id": nuc_id, "success": False}
+        cf = CloudFiles(save_cloudpath)
+        cf.put_json(f"{nuc_id}.json", d)
+        return d
+    else:
+        print("nothing to adjust")
+        return None
+
+
+def make_nucleus_adjustment_tasks(
+    df,
+    nuc_cv_path,
+    seg_cv_path,
+    save_cloudpath,
+    position_column="pt_position",
+    nuc_id_column="id",
+    nuc_sv_column="pt_supervoxel_id",
+    nuc_pos_resolution=(4, 4, 40),
+    radius=3000,
+):
+    def make_bnd_func(row):
+
+        bound_fn = partial(
+            readjust_nuclei,
+            row[nuc_id_column],
+            row[position_column],
+            row[nuc_sv_column],
+            nuc_pos_resolution,
+            nuc_cv_path,
+            seg_cv_path,
+            save_cloudpath,
+            radius,
+        )
+
         return bound_fn
 
     tasks = (make_bnd_func(row) for num, row in df.iterrows())
