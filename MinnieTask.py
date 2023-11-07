@@ -861,6 +861,141 @@ def make_quantify_soma_region_tasks(
 
 
 @queueable
+def find_soma_contact(
+    pcg_source,
+    root_id,
+    nuc_id,
+    voxel_threshold,
+    timestamp,
+    mins,
+    maxs,
+    resolution,
+    bucket_save_location,
+):
+    cf = CloudFiles(bucket_save_location)
+    dt_timestamp = datetime.datetime.fromisoformat(timestamp)
+    bbox = cloudvolume.Bbox(mins, maxs)
+
+    print(bbox, resolution)
+    seg_cv = cloudvolume.CloudVolume(
+        pcg_source, mip=resolution, use_https=True, fill_missing=True, bounded=False
+    )
+
+    if pcg_source.startswith("graphene"):
+        flat_img = seg_cv.download(bbox, agglomerate=False, timestamp=dt_timestamp)
+        flat_img = seg_cv.agglomerate_cutout(np.array(flat_img), timestamp=timestamp)
+    else:
+        flat_img = seg_cv.download(bbox)
+    flat_img = np.squeeze(flat_img)
+    cell_mask = np.array(flat_img == root_id)
+    print(np.sum(cell_mask), cell_mask.shape)
+
+    if (np.sum(cell_mask) == 0) | np.any(np.array(cell_mask.shape[:3]) == 1):
+        d = [
+            {
+                "root_id": root_id,
+                "nuc_id": nuc_id,
+                "message": "nucleus is only in single section or contains zero voxels",
+            }
+        ]
+
+        cf.put_json(f"{nuc_id}_{root_id}.json", d)
+        print(d)
+    else:
+        cell_mask_grow = morphology.binary_dilation(cell_mask, iterations=1)
+
+        cell_border_mask = np.logical_xor(cell_mask_grow, cell_mask)
+        
+        id_list, counts = get_ids_in_mask(cell_border_mask, flat_img, exclude_list=[0])
+        id_list = id_list[counts > voxel_threshold]
+        counts = counts[counts > voxel_threshold]
+
+        # find the centroid of each of the ids in the cell_border_mask
+        # and find the point in the cell_mask that is closets to that point
+        # then find the distance between the two
+        contacts = []
+
+        for id_, count in zip(id_list, counts):
+            # find the centroid of the id
+            id_mask = np.array(flat_img * cell_border_mask == id_)
+            id_centroid = np.mean(np.where(id_mask), axis=1) + mins
+
+            # find the point in the id_mask that is closest to the centroid
+            id_mask_pts = np.where(id_mask)
+            id_mask_pts = np.array(id_mask_pts).T
+            id_mask_pts = id_mask_pts + mins
+            dists = np.linalg.norm(id_mask_pts - id_centroid, axis=1)
+            closest_pt = id_mask_pts[np.argmin(dists)]
+
+            # find the point in the cell_mask that is closest to that point
+            cell_mask_pts = np.where(cell_mask)
+            cell_mask_pts = np.array(cell_mask_pts).T
+            cell_mask_pts = cell_mask_pts + mins
+            dists = np.linalg.norm(cell_mask_pts - closest_pt, axis=1)
+            closest_cell_pt = cell_mask_pts[np.argmin(dists)]
+
+            contacts.append(
+                {
+                    "root_id": root_id,
+                    "nuc_id": nuc_id,
+                    "contact_id": id_,
+                    "contact_pt": closest_pt.tolist(),
+                    "cell_pt": closest_cell_pt.tolist(),
+                    "voxel_counts": count,
+                }
+            )
+
+        cf.put_json(f"{nuc_id}_{root_id}.json", contacts)
+        print(contacts)
+
+
+def make_find_soma_tasks(
+    df,
+    pcg_source,
+    bucket_save_location,
+    timestamp=datetime.datetime.utcnow(),
+    resolution=(64, 64, 40),
+    pt_resolution=(4, 4, 40),
+    radius=10000,
+    voxel_threshold=3000,
+    root_id_column="pt_root_id",
+    nuc_id_column="nuc_id",
+    pos_column="pt_position",
+):
+
+    cv = cloudvolume.CloudVolume(pcg_source, use_https=True)
+    res_mip = next(
+        k for k, s in enumerate(cv.scales) if s["resolution"] == list(resolution)
+    )
+
+    def make_bnd_func(row):
+        ctr_pt = row[pos_column]
+        rad_box = (np.array([radius, radius, radius]) / pt_resolution).astype(np.int32)
+        res_ratio = cv.resolution / pt_resolution
+        mins = ((ctr_pt - rad_box) / res_ratio).astype(np.int32)
+        maxs = ((ctr_pt + rad_box) / res_ratio).astype(np.int32)
+        bbox_mip0 = cloudvolume.Bbox(mins, maxs)
+        bbox_mipr = cv.bbox_to_mip(bbox_mip0, 0, res_mip)
+        bound_fn = partial(
+            find_soma_contact,
+            pcg_source,
+            row[root_id_column],
+            row[nuc_id_column],
+            voxel_threshold,
+            timestamp.isoformat(),
+            bbox_mipr.minpt.tolist(),
+            bbox_mipr.maxpt.tolist(),
+            resolution,
+            bucket_save_location,
+        )
+
+        return bound_fn
+
+    tasks = (make_bnd_func(row) for num, row in df.iterrows())
+    return tasks
+
+
+@queueable
 def execute_split(
     root_id,
     cut_ids,
@@ -998,12 +1133,12 @@ def readjust_nuclei(
         # make a mask of where the nucleus segmnentation matches the nucleus ID
         # and is at least 5 pixels from the border
         nuc_mask = nuc_cutout == nuc_id
-        nuc_mask_erode = morphology.binary_erosion(nuc_mask, iterations=5)
+        nuc_mask_erode = morphology.binary_erosion(nuc_mask, iterations=2)
 
         # make a mask of where the segmentation volume has data and is at least
         # 5 pixels from the border
         seg_mask = seg_cutout != 0
-        seg_mask_erode = morphology.binary_erosion(seg_mask, iterations=5)
+        seg_mask_erode = morphology.binary_erosion(seg_mask, iterations=2)
 
         # calculate the coordinates of where each voxels is in cutout coordinates
         xs = np.arange(nuc_bbox.minpt[0], nuc_bbox.maxpt[0])
