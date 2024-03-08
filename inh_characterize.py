@@ -14,6 +14,7 @@ def characterize_neuron(pt_root_id, cloud_path):
                                             filter_equal_dict={
                                                 'pre_pt_root_id': pt_root_id,
                                             } )
+    conn_df = conn_df[conn_df['post_pt_root_id']!=conn_df['pre_pt_root_id']]
     # merge the synapse table with the cell type table
     conn_dfm = conn_df.merge(ct_df[['pt_root_id','cell_type']],
                              left_on='post_pt_root_id',
