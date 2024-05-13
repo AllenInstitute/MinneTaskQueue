@@ -157,7 +157,6 @@ def create_skeletonize_tasks(
             return itr
 
         def __iter__(self):
-
             for num, row in self.df.iterrows():
                 ctr_pt = row.nuc_loc * self.resolution
                 yield MinnieSkeletonizeNeuron(
@@ -248,7 +247,6 @@ class MinniePerformNucMergeTask(RegisteredTask):
                         [self.nuc_sv_id, self.cell_sv_id]
                     )
                     if root_test[0] == root_test[1]:
-
                         print("merge test found completion")
                         r["did_merge"] = True
                         r["new_root_id"] = root_test[1]
@@ -258,7 +256,6 @@ class MinniePerformNucMergeTask(RegisteredTask):
                         "Merge appeared to have failed after 3.5 minutes of waiting"
                     )
         else:
-
             r["did_merge"] = False
         r["nuc_sv_id"] = self.nuc_sv_id
         r["cell_sv_id"] = self.cell_sv_id
@@ -353,7 +350,6 @@ class MinnieNucMergeTask(RegisteredTask):
         self.scale = np.array(resolution, dtype=np.float) / point_resolution
 
     def execute(self):
-
         bbox = cloudvolume.Bbox(self.mins, self.maxs)
         print(f"findin merging {self.flat_nuc_id} at {self.centroid * self.scale}")
         print(bbox)
@@ -452,7 +448,6 @@ class MinnieNucMergeTask(RegisteredTask):
             nuc_border_cell_mask = np.logical_and(cell_mask_grow, nuc_mask)
 
             for nuc_id, nuc_voxels in zip(nuc_ids, nuc_counts):
-
                 nuc_border_cell_mask2 = np.logical_and(
                     nuc_border_cell_mask, np.array(flat_img == nuc_id)
                 )
@@ -577,7 +572,6 @@ def create_perform_nuc_merge_tasks(
             return itr
 
         def __iter__(self):
-
             for num, row in self.df.iterrows():
                 yield MinniePerformNucMergeTask(
                     self.pcg_source,
@@ -639,7 +633,6 @@ def create_nuc_merge_tasks(
             return itr
 
         def __iter__(self):
-
             for num, row in self.df.iterrows():
                 mins = [int(row.bbox_bx), int(row.bbox_by), int(row.bbox_bz)]
                 maxs = [int(row.bbox_ex), int(row.bbox_ey), int(row.bbox_ez)]
@@ -723,7 +716,6 @@ def create_nuc_merge_tasks_from_points(
             return itr
 
         def __iter__(self):
-
             for pt in pts:
                 pt = (pt * self.point_resolution) / self.cv.resolution
                 pt = pt.astype(np.int32)
@@ -779,7 +771,6 @@ def create_sv_lookup_tasks(
             return itr
 
         def __iter__(self):
-
             for num, row in self.df.iterrows():
                 centroid = [
                     int(row.centroid_x),
@@ -803,7 +794,6 @@ def create_sv_lookup_tasks(
 def quantify_soma_region(
     pcg_source, nuc_id, mins, maxs, resolution, bucket_save_location
 ):
-
     seg_cv = cloudvolume.CloudVolume(
         pcg_source, mip=resolution, use_https=True, fill_missing=True, bounded=False
     )
@@ -832,19 +822,21 @@ def make_quantify_soma_region_tasks(
     pt_resolution=(4, 4, 40),
     radius=15000,
 ):
-
     cv = cloudvolume.CloudVolume(pcg_source, use_https=True)
+    mip0_res = cv.resolution
+
     res_mip = next(
         k for k, s in enumerate(cv.scales) if s["resolution"] == list(resolution)
     )
 
     def make_bnd_func(row):
-        ctr_pt = row.pt_position
-        rad_box = (np.array([radius, radius, radius]) / pt_resolution).astype(np.int32)
-        mins = ((ctr_pt - rad_box) / [2, 2, 1]).astype(np.int32)
-        maxs = ((ctr_pt + rad_box) / [2, 2, 1]).astype(np.int32)
-        bbox_mip0 = cloudvolume.Bbox(mins, maxs)
-        bbox_mipr = cv.bbox_to_mip(bbox_mip0, 0, res_mip)
+        ctr_pt_nm = row.pt_position * pt_resolution
+        rad_box_nm = (np.array([radius, radius, radius])).astype(np.int32)
+        mins_nm = (ctr_pt_nm - rad_box_nm).astype(np.int32)
+        maxs_nm = (ctr_pt_nm + rad_box_nm).astype(np.int32)
+
+        bbox_mip0 = cloudvolume.Bbox(mins_nm / mip0_res, maxs_nm / mip0_res)
+        bbox_mipr = cv.bbox_to_mip(bbox_mip0, 0, res_mip).astype(np.int32)
         bound_fn = partial(
             quantify_soma_region,
             pcg_source,
@@ -905,7 +897,7 @@ def find_soma_contact(
         cell_mask_grow = morphology.binary_dilation(cell_mask, iterations=1)
 
         cell_border_mask = np.logical_xor(cell_mask_grow, cell_mask)
-        
+
         id_list, counts = get_ids_in_mask(cell_border_mask, flat_img, exclude_list=[0])
         id_list = id_list[counts > voxel_threshold]
         counts = counts[counts > voxel_threshold]
@@ -962,7 +954,6 @@ def make_find_soma_tasks(
     nuc_id_column="nuc_id",
     pos_column="pt_position",
 ):
-
     cv = cloudvolume.CloudVolume(pcg_source, use_https=True)
     res_mip = next(
         k for k, s in enumerate(cv.scales) if s["resolution"] == list(resolution)
@@ -1197,7 +1188,6 @@ def make_nucleus_adjustment_tasks(
     radius=3000,
 ):
     def make_bnd_func(row):
-
         bound_fn = partial(
             readjust_nuclei,
             row[nuc_id_column],

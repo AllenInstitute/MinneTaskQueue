@@ -5,7 +5,7 @@ metadata:
     run: minnietask-cpu2
   name: minnietask-cpu2
 spec:
-  replicas: 20
+  replicas: 200
   selector:
     matchLabels:
       run: minnietask-cpu2
@@ -39,8 +39,8 @@ spec:
               value: "test2"
           resources:
             requests:
-              cpu: 50m
-              memory: 200Mi
+              cpu: 600m
+              memory: 1000Mi
           volumeMounts:
             - name: secrets
               mountPath: /root/.cloudvolume/secrets
@@ -53,7 +53,7 @@ spec:
       volumes:
         - name: secrets
           secret:
-            secretName: secretsminnie
+            secretName: secrets2
         - name: boto
           secret:
             secretName: boto
